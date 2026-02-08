@@ -357,16 +357,18 @@ function parseIndoorBikeData(dataView) {
     return data;
 }
 
-// Update UI with bike data
+// Update UI with bike data from FTMS trainer
+// Skip cadence/avgCadence when external CSC sensor is connected
+// Skip heart rate when external HRM is connected
 function updateMetrics(data) {
     if (data.power !== undefined) elements.power.textContent = data.power;
-    if (data.cadence !== undefined) elements.cadence.textContent = Math.round(data.cadence);
-    if (data.speed !== undefined) elements.speed.textContent = data.speed.toFixed(1);
+    if (data.cadence !== undefined && !cscDevice) elements.cadence.textContent = Math.round(data.cadence);
+    if (data.speed !== undefined && !cscDevice) elements.speed.textContent = data.speed.toFixed(1);
     if (data.resistance !== undefined) elements.resistance.textContent = data.resistance;
     if (data.avgPower !== undefined) elements.avgPower.textContent = data.avgPower;
-    if (data.avgSpeed !== undefined) elements.avgSpeed.textContent = data.avgSpeed.toFixed(1);
-    if (data.avgCadence !== undefined) elements.avgCadence.textContent = Math.round(data.avgCadence);
-    if (data.heartRate !== undefined) elements.heartRate.textContent = data.heartRate;
+    if (data.avgSpeed !== undefined && !cscDevice) elements.avgSpeed.textContent = data.avgSpeed.toFixed(1);
+    if (data.avgCadence !== undefined && !cscDevice) elements.avgCadence.textContent = Math.round(data.avgCadence);
+    if (data.heartRate !== undefined && !hrmDevice) elements.heartRate.textContent = data.heartRate;
     if (data.totalDistance !== undefined) elements.totalDistance.textContent = data.totalDistance;
     if (data.totalEnergy !== undefined) elements.totalEnergy.textContent = data.totalEnergy;
     if (data.elapsedTime !== undefined) elements.elapsedTime.textContent = formatTime(data.elapsedTime);

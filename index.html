@@ -20,7 +20,11 @@
         .btn-secondary:hover:not(:disabled) { background: #5a5a7a; }
         .btn-danger { background: #ff4757; color: #fff; }
         .btn-danger:hover:not(:disabled) { background: #ff3344; }
-        .status { text-align: center; padding: 10px; margin-bottom: 20px; border-radius: 8px; }
+        .btn-hrm { background: #ff6b81; color: #fff; }
+        .btn-hrm:hover:not(:disabled) { background: #ff4757; }
+        .btn-csc { background: #7bed9f; color: #1a1a2e; }
+        .btn-csc:hover:not(:disabled) { background: #2ed573; }
+        .status { text-align: center; padding: 10px; margin-bottom: 20px; border-radius: 8px; font-size: 14px; }
         .status.connected { background: #2ed57320; border: 1px solid #2ed573; }
         .status.disconnected { background: #ff475720; border: 1px solid #ff4757; }
         .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px; }
@@ -47,11 +51,15 @@
 
         <div class="connection">
             <button id="connectTrainer" class="btn-primary">Connect Trainer</button>
+            <button id="connectHRM" class="btn-hrm">Connect HRM</button>
+            <button id="connectCSC" class="btn-csc">Connect Cadence</button>
             <button id="connectClick" class="btn-secondary">Connect Zwift Click</button>
             <button id="disconnect" class="btn-danger" disabled>Disconnect</button>
         </div>
 
         <div id="trainerStatus" class="status disconnected">Trainer: Disconnected</div>
+        <div id="hrmStatus" class="status disconnected">HRM: Disconnected</div>
+        <div id="cscStatus" class="status disconnected">Speed/Cadence: Disconnected</div>
         <div id="clickStatus" class="status disconnected">Zwift Click: Disconnected</div>
 
         <div class="metrics">
@@ -69,6 +77,11 @@
                 <div class="metric-value" id="speed">--</div>
                 <div class="metric-unit">km/h</div>
                 <div class="metric-label">Speed</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="heartRate">--</div>
+                <div class="metric-unit">bpm</div>
+                <div class="metric-label">Heart Rate</div>
             </div>
             <div class="metric">
                 <div class="metric-value" id="resistance">--</div>
@@ -89,11 +102,6 @@
                 <div class="metric-value" id="avgCadence">--</div>
                 <div class="metric-unit">rpm</div>
                 <div class="metric-label">Avg Cadence</div>
-            </div>
-            <div class="metric">
-                <div class="metric-value" id="heartRate">--</div>
-                <div class="metric-unit">bpm</div>
-                <div class="metric-label">Heart Rate</div>
             </div>
             <div class="metric">
                 <div class="metric-value" id="totalDistance">--</div>
@@ -153,6 +161,14 @@ const FTMS_SERVICE = 0x1826;
 const INDOOR_BIKE_DATA = 0x2AD2;
 const CONTROL_POINT = 0x2AD9;
 
+// Heart Rate Service UUIDs
+const HRM_SERVICE = 0x180D;
+const HRM_MEASUREMENT = 0x2A37;
+
+// Cycling Speed and Cadence Service UUIDs
+const CSC_SERVICE = 0x1816;
+const CSC_MEASUREMENT = 0x2A5B;
+
 // Zwift Click UUIDs - Legacy (pre-2025)
 const ZWIFT_SERVICE_LEGACY = '00000001-19ca-4651-86e5-fa29dcdd09d1';
 const ZWIFT_ASYNC_LEGACY = '00000002-19ca-4651-86e5-fa29dcdd09d1';
@@ -171,31 +187,46 @@ const OP_START = 0x07;
 const OP_STOP = 0x08;
 const OP_SET_SIMULATION = 0x11;
 
+// CSC wheel circumference in meters (700x25c default)
+const WHEEL_CIRCUMFERENCE = 2.105;
+
 // State
 let trainerDevice = null;
 let trainerServer = null;
 let controlPointChar = null;
 let indoorBikeDataChar = null;
+let hrmDevice = null;
+let cscDevice = null;
 let clickDevice = null;
 let currentGear = 12;
 const MIN_GEAR = 1;
 const MAX_GEAR = 24;
 
+// CSC state for delta calculations
+let lastCrankRevs = null;
+let lastCrankTime = null;
+let lastWheelRevs = null;
+let lastWheelTime = null;
+
 // DOM Elements
 const elements = {
     connectTrainer: document.getElementById('connectTrainer'),
+    connectHRM: document.getElementById('connectHRM'),
+    connectCSC: document.getElementById('connectCSC'),
     connectClick: document.getElementById('connectClick'),
     disconnect: document.getElementById('disconnect'),
     trainerStatus: document.getElementById('trainerStatus'),
+    hrmStatus: document.getElementById('hrmStatus'),
+    cscStatus: document.getElementById('cscStatus'),
     clickStatus: document.getElementById('clickStatus'),
     power: document.getElementById('power'),
     cadence: document.getElementById('cadence'),
     speed: document.getElementById('speed'),
+    heartRate: document.getElementById('heartRate'),
     resistance: document.getElementById('resistance'),
     avgPower: document.getElementById('avgPower'),
     avgSpeed: document.getElementById('avgSpeed'),
     avgCadence: document.getElementById('avgCadence'),
-    heartRate: document.getElementById('heartRate'),
     totalDistance: document.getElementById('totalDistance'),
     totalEnergy: document.getElementById('totalEnergy'),
     elapsedTime: document.getElementById('elapsedTime'),
@@ -226,6 +257,12 @@ function formatTime(seconds) {
     const min = Math.floor(seconds / 60);
     const sec = seconds % 60;
     return `${min}:${sec.toString().padStart(2, '0')}`;
+}
+
+// Handle UINT16 wraparound for CSC counters
+function uint16Diff(current, previous) {
+    if (current >= previous) return current - previous;
+    return 65536 - previous + current;
 }
 
 // Parse Indoor Bike Data characteristic (FTMS bits 0-12)
@@ -336,7 +373,8 @@ function updateMetrics(data) {
     if (data.remainingTime !== undefined) elements.remainingTime.textContent = formatTime(data.remainingTime);
 }
 
-// Connect to FTMS Trainer
+// ── FTMS Trainer ──
+
 async function connectTrainer() {
     try {
         log('Requesting Bluetooth device...');
@@ -377,7 +415,6 @@ async function connectTrainer() {
                 log(`Control Point response: ${Array.from(response).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
             });
 
-            // Request control
             await requestControl();
             log('Control Point ready', 'success');
 
@@ -397,7 +434,6 @@ async function connectTrainer() {
     }
 }
 
-// Request control of the trainer
 async function requestControl() {
     if (!controlPointChar) return;
     try {
@@ -409,7 +445,6 @@ async function requestControl() {
     }
 }
 
-// Set resistance level (0-25, FTMS UINT8 with 0.1 resolution)
 async function setResistance(level) {
     if (!controlPointChar) return;
     try {
@@ -422,14 +457,13 @@ async function setResistance(level) {
     }
 }
 
-// Set simulation parameters (grade in %)
 async function setSimulation(grade) {
     if (!controlPointChar) return;
     try {
-        const windSpeed = 0; // m/s * 1000
-        const gradeValue = Math.round(grade * 100); // % * 100 (signed int16)
-        const crr = 40; // Rolling resistance coefficient 0.004 * 10000
-        const cw = 51;  // Wind resistance coefficient 0.51 * 100 (kg/m)
+        const windSpeed = 0;
+        const gradeValue = Math.round(grade * 100);
+        const crr = 40;  // 0.004 * 10000
+        const cw = 51;   // 0.51 * 100 kg/m
 
         const cmd = new ArrayBuffer(7);
         const view = new DataView(cmd);
@@ -446,7 +480,6 @@ async function setSimulation(grade) {
     }
 }
 
-// Handle trainer disconnection
 function onTrainerDisconnected() {
     log('Trainer disconnected', 'error');
     elements.trainerStatus.textContent = 'Trainer: Disconnected';
@@ -460,7 +493,156 @@ function onTrainerDisconnected() {
     indoorBikeDataChar = null;
 }
 
-// Handle Click disconnection
+// ── Heart Rate Monitor ──
+
+async function connectHRM() {
+    try {
+        log('Requesting Heart Rate Monitor...');
+
+        hrmDevice = await navigator.bluetooth.requestDevice({
+            filters: [{ services: [HRM_SERVICE] }]
+        });
+
+        log(`Found HRM: ${hrmDevice.name}`, 'success');
+
+        hrmDevice.addEventListener('gattserverdisconnected', onHRMDisconnected);
+
+        const server = await hrmDevice.gatt.connect();
+        const service = await server.getPrimaryService(HRM_SERVICE);
+        const hrmChar = await service.getCharacteristic(HRM_MEASUREMENT);
+
+        await hrmChar.startNotifications();
+        hrmChar.addEventListener('characteristicvaluechanged', (event) => {
+            const hr = parseHeartRate(event.target.value);
+            elements.heartRate.textContent = hr;
+        });
+
+        log('Heart Rate notifications started', 'success');
+
+        elements.hrmStatus.textContent = `HRM: ${hrmDevice.name}`;
+        elements.hrmStatus.className = 'status connected';
+        elements.connectHRM.disabled = true;
+        elements.disconnect.disabled = false;
+
+    } catch (error) {
+        log(`HRM connection failed: ${error.message}`, 'error');
+    }
+}
+
+function parseHeartRate(dataView) {
+    const flags = dataView.getUint8(0);
+    // Bit 0: HR format — 0 = UINT8, 1 = UINT16
+    if (flags & 0x01) {
+        return dataView.getUint16(1, true);
+    }
+    return dataView.getUint8(1);
+}
+
+function onHRMDisconnected() {
+    log('HRM disconnected', 'error');
+    elements.hrmStatus.textContent = 'HRM: Disconnected';
+    elements.hrmStatus.className = 'status disconnected';
+    elements.connectHRM.disabled = false;
+    hrmDevice = null;
+}
+
+// ── Cycling Speed and Cadence Sensor ──
+
+async function connectCSC() {
+    try {
+        log('Requesting Speed/Cadence sensor...');
+
+        cscDevice = await navigator.bluetooth.requestDevice({
+            filters: [{ services: [CSC_SERVICE] }]
+        });
+
+        log(`Found CSC: ${cscDevice.name}`, 'success');
+
+        cscDevice.addEventListener('gattserverdisconnected', onCSCDisconnected);
+
+        const server = await cscDevice.gatt.connect();
+        const service = await server.getPrimaryService(CSC_SERVICE);
+        const cscChar = await service.getCharacteristic(CSC_MEASUREMENT);
+
+        await cscChar.startNotifications();
+        cscChar.addEventListener('characteristicvaluechanged', (event) => {
+            handleCSCMeasurement(event.target.value);
+        });
+
+        log('CSC notifications started', 'success');
+
+        elements.cscStatus.textContent = `Speed/Cadence: ${cscDevice.name}`;
+        elements.cscStatus.className = 'status connected';
+        elements.connectCSC.disabled = true;
+        elements.disconnect.disabled = false;
+
+    } catch (error) {
+        log(`CSC connection failed: ${error.message}`, 'error');
+    }
+}
+
+function handleCSCMeasurement(dataView) {
+    const flags = dataView.getUint8(0);
+    let offset = 1;
+
+    // Bit 0: Wheel Revolution Data Present
+    if (flags & 0x01) {
+        const wheelRevs = dataView.getUint32(offset, true);
+        offset += 4;
+        const wheelTime = dataView.getUint16(offset, true); // 1/1024 sec
+        offset += 2;
+
+        if (lastWheelRevs !== null && wheelRevs !== lastWheelRevs) {
+            // UINT32 for wheel revs — no practical wraparound
+            const revsDiff = wheelRevs - lastWheelRevs;
+            const timeDiff = uint16Diff(wheelTime, lastWheelTime);
+            if (timeDiff > 0) {
+                const speed = (revsDiff * WHEEL_CIRCUMFERENCE / (timeDiff / 1024)) * 3.6;
+                elements.speed.textContent = speed.toFixed(1);
+            }
+        } else if (lastWheelRevs !== null && wheelRevs === lastWheelRevs) {
+            elements.speed.textContent = '0.0';
+        }
+        lastWheelRevs = wheelRevs;
+        lastWheelTime = wheelTime;
+    }
+
+    // Bit 1: Crank Revolution Data Present
+    if (flags & 0x02) {
+        const crankRevs = dataView.getUint16(offset, true);
+        offset += 2;
+        const crankTime = dataView.getUint16(offset, true); // 1/1024 sec
+        offset += 2;
+
+        if (lastCrankRevs !== null) {
+            const revsDiff = uint16Diff(crankRevs, lastCrankRevs);
+            const timeDiff = uint16Diff(crankTime, lastCrankTime);
+            if (timeDiff > 0 && revsDiff > 0) {
+                const cadence = (revsDiff / (timeDiff / 1024)) * 60;
+                elements.cadence.textContent = Math.round(cadence);
+            } else if (revsDiff === 0) {
+                elements.cadence.textContent = '0';
+            }
+        }
+        lastCrankRevs = crankRevs;
+        lastCrankTime = crankTime;
+    }
+}
+
+function onCSCDisconnected() {
+    log('Speed/Cadence sensor disconnected', 'error');
+    elements.cscStatus.textContent = 'Speed/Cadence: Disconnected';
+    elements.cscStatus.className = 'status disconnected';
+    elements.connectCSC.disabled = false;
+    cscDevice = null;
+    lastCrankRevs = null;
+    lastCrankTime = null;
+    lastWheelRevs = null;
+    lastWheelTime = null;
+}
+
+// ── Zwift Click ──
+
 function onClickDisconnected() {
     log('Click disconnected', 'error');
     elements.clickStatus.textContent = 'Zwift Click: Disconnected';
@@ -470,7 +652,6 @@ function onClickDisconnected() {
     lastButtonState = 0xFFFFFFFF;
 }
 
-// Connect to Zwift Click
 async function connectClick() {
     try {
         log('Requesting Zwift Click device...');
@@ -490,14 +671,12 @@ async function connectClick() {
 
         const server = await clickDevice.gatt.connect();
 
-        // Try to get all services and log them for debugging
         log('Discovering services...');
         const services = await server.getPrimaryServices();
         for (const svc of services) {
             log(`Found service: ${svc.uuid}`);
         }
 
-        // Try legacy service first, then new
         let service = null;
         let useNewProtocol = false;
 
@@ -516,7 +695,6 @@ async function connectClick() {
             }
         }
 
-        // Get all characteristics and log them
         log('Discovering characteristics...');
         const characteristics = await service.getCharacteristics();
         for (const char of characteristics) {
@@ -530,19 +708,11 @@ async function connectClick() {
         }
 
         if (useNewProtocol) {
-            // New protocol FC82 - still needs handshake on same characteristic UUIDs
-            // Char 0x0002 = ASYNC (notify) - button data
-            // Char 0x0003 = SYNC_RX (write) - send commands/handshake
-            // Char 0x0004 = SYNC_TX (indicate) - receive responses
-            // Char 0x0100, 0x0101, 0x0102 = new characteristics
-
-            // Get the key characteristics
             let syncRxChar = null;
 
             for (const char of characteristics) {
                 const uuid = char.uuid;
 
-                // Subscribe to all notify AND indicate characteristics
                 if (char.properties.notify || char.properties.indicate) {
                     try {
                         await char.startNotifications();
@@ -557,13 +727,11 @@ async function connectClick() {
                     }
                 }
 
-                // Identify write characteristic for handshake (0x0003)
                 if (uuid.includes('00000003')) {
                     syncRxChar = char;
                 }
             }
 
-            // Send handshake "RideOn" to SYNC_RX (0x0003)
             if (syncRxChar) {
                 const handshake = new TextEncoder().encode('RideOn');
                 try {
@@ -576,12 +744,10 @@ async function connectClick() {
                 log('SYNC_RX characteristic (0x0003) not found', 'error');
             }
         } else {
-            // Legacy protocol with handshake
             const asyncChar = await service.getCharacteristic(ZWIFT_ASYNC_LEGACY);
             const syncRxChar = await service.getCharacteristic(ZWIFT_SYNC_RX_LEGACY);
             const syncTxChar = await service.getCharacteristic(ZWIFT_SYNC_TX_LEGACY);
 
-            // Setup notifications for SYNC_TX (handshake response)
             await syncTxChar.startNotifications();
             syncTxChar.addEventListener('characteristicvaluechanged', (event) => {
                 const data = new Uint8Array(event.target.value.buffer);
@@ -591,14 +757,12 @@ async function connectClick() {
                 }
             });
 
-            // Setup notifications for ASYNC (button presses)
             await asyncChar.startNotifications();
             asyncChar.addEventListener('characteristicvaluechanged', (event) => {
                 const data = new Uint8Array(event.target.value.buffer);
                 handleClickInput(data, event.target.uuid);
             });
 
-            // Send handshake
             const handshake = new TextEncoder().encode('RideOn');
             await syncRxChar.writeValueWithResponse(handshake);
             log('Handshake sent');
@@ -617,11 +781,9 @@ async function connectClick() {
 // Track button state to detect edges (press/release)
 let lastButtonState = 0xFFFFFFFF;
 
-// Handle Zwift Click button input
 function handleClickInput(data, charUuid = 'unknown') {
     const shortUuid = charUuid.substring(4, 8);
 
-    // Check for handshake response
     if (data.length >= 6) {
         const text = new TextDecoder().decode(data.slice(0, 6));
         if (text === 'RideOn') {
@@ -634,29 +796,19 @@ function handleClickInput(data, charUuid = 'unknown') {
 
     const messageId = data[0];
 
-    // Keystroke message (0x23)
-    // Format: 23 08 [b0 b1 b2 b3] 0f
-    // Bytes 2-5 are button bitmap (little-endian), 0 = pressed (inverted)
     if (messageId === 0x23 && data.length >= 7) {
-        // Read 32-bit button bitmap from bytes 2-5 (after 0x23 0x08)
         const b0 = data[2];
         const b1 = data[3];
         const b2 = data[4];
         const b3 = data[5];
         const buttons = ((b3 << 24) | (b2 << 16) | (b1 << 8) | b0) >>> 0;
 
-        // Invert to get pressed buttons (1 = pressed)
         const pressed = (~buttons) >>> 0;
-
-        // Detect newly pressed buttons (edge detection)
         const lastPressed = (~lastButtonState) >>> 0;
         const newlyPressed = pressed & ~lastPressed;
 
-        // Known button bits from analysis:
-        // Bit 9 (0x0200) in b1 = 0xfd = shift down (easier gear)
-        // Bit 13 (0x2000) in b1 = 0xdf = shift up (harder gear)
-        const SHIFT_DOWN_BIT = 0x00000200; // b1 bit 1 (0xfd)
-        const SHIFT_UP_BIT = 0x00002000;   // b1 bit 5 (0xdf)
+        const SHIFT_DOWN_BIT = 0x00000200;
+        const SHIFT_UP_BIT = 0x00002000;
 
         if (newlyPressed & SHIFT_DOWN_BIT) {
             log('Shift DOWN detected', 'success');
@@ -667,7 +819,6 @@ function handleClickInput(data, charUuid = 'unknown') {
             changeGear(1);
         }
 
-        // Debug: log any button press
         if (newlyPressed !== 0) {
             log(`Button press: 0x${newlyPressed.toString(16).padStart(8, '0')}`);
         }
@@ -676,38 +827,42 @@ function handleClickInput(data, charUuid = 'unknown') {
         return;
     }
 
-    // Idle/keepalive message (0x19, 0x15) - ignore silently
     if (messageId === 0x19 || messageId === 0x15) {
         return;
     }
 
-    // Other messages - log for debugging
     const hex = Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' ');
     log(`[${shortUuid}] ${hex}`);
 }
 
-// Change gear
+// ── Gears ──
+
 function changeGear(delta) {
     const newGear = Math.max(MIN_GEAR, Math.min(MAX_GEAR, currentGear + delta));
     if (newGear !== currentGear) {
         currentGear = newGear;
         elements.currentGear.textContent = currentGear;
 
-        // Calculate resistance based on gear (linear mapping to FTMS range 0-25)
         const resistance = (currentGear / MAX_GEAR) * 25;
         log(`Gear ${currentGear} (resistance ~${resistance.toFixed(1)})`);
 
-        // Optionally apply to trainer
         if (controlPointChar) {
             setResistance(resistance);
         }
     }
 }
 
-// Disconnect all
+// ── Disconnect ──
+
 function disconnectAll() {
     if (trainerDevice && trainerDevice.gatt.connected) {
         trainerDevice.gatt.disconnect();
+    }
+    if (hrmDevice && hrmDevice.gatt.connected) {
+        hrmDevice.gatt.disconnect();
+    }
+    if (cscDevice && cscDevice.gatt.connected) {
+        cscDevice.gatt.disconnect();
     }
     if (clickDevice && clickDevice.gatt.connected) {
         clickDevice.gatt.disconnect();
@@ -715,8 +870,11 @@ function disconnectAll() {
     elements.disconnect.disabled = true;
 }
 
-// Event listeners
+// ── Event listeners ──
+
 elements.connectTrainer.addEventListener('click', connectTrainer);
+elements.connectHRM.addEventListener('click', connectHRM);
+elements.connectCSC.addEventListener('click', connectCSC);
 elements.connectClick.addEventListener('click', connectClick);
 elements.disconnect.addEventListener('click', disconnectAll);
 
@@ -750,6 +908,8 @@ document.addEventListener('keydown', (e) => {
 if (!navigator.bluetooth) {
     log('Web Bluetooth is not supported in this browser!', 'error');
     elements.connectTrainer.disabled = true;
+    elements.connectHRM.disabled = true;
+    elements.connectCSC.disabled = true;
     elements.connectClick.disabled = true;
 }
 </script>

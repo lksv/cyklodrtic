@@ -1,5 +1,7 @@
 # FTMS Bike Trainer Console
 
+**[Live App](https://lksv.github.io/cyklodrtic/)**
+
 A minimal browser application for connecting to Bluetooth FTMS (Fitness Machine Service) compatible bike trainers and Zwift Click virtual shifting controllers.
 
 ## Features

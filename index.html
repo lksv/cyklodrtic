@@ -72,8 +72,48 @@
             </div>
             <div class="metric">
                 <div class="metric-value" id="resistance">--</div>
-                <div class="metric-unit">%</div>
+                <div class="metric-unit"></div>
                 <div class="metric-label">Resistance</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="avgPower">--</div>
+                <div class="metric-unit">W</div>
+                <div class="metric-label">Avg Power</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="avgSpeed">--</div>
+                <div class="metric-unit">km/h</div>
+                <div class="metric-label">Avg Speed</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="avgCadence">--</div>
+                <div class="metric-unit">rpm</div>
+                <div class="metric-label">Avg Cadence</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="heartRate">--</div>
+                <div class="metric-unit">bpm</div>
+                <div class="metric-label">Heart Rate</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="totalDistance">--</div>
+                <div class="metric-unit">m</div>
+                <div class="metric-label">Distance</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="totalEnergy">--</div>
+                <div class="metric-unit">kcal</div>
+                <div class="metric-label">Energy</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="elapsedTime">--</div>
+                <div class="metric-unit"></div>
+                <div class="metric-label">Elapsed</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="remainingTime">--</div>
+                <div class="metric-unit"></div>
+                <div class="metric-label">Remaining</div>
             </div>
         </div>
 
@@ -89,8 +129,8 @@
         <div class="controls">
             <h3 style="margin-bottom: 15px; color: #aaa;">Manual Resistance</h3>
             <div class="control-group">
-                <input type="range" id="resistanceSlider" min="0" max="100" value="50">
-                <div class="value"><span id="resistanceValue">50</span>%</div>
+                <input type="range" id="resistanceSlider" min="0" max="25" value="12" step="0.5">
+                <div class="value"><span id="resistanceValue">12</span></div>
             </div>
             <button id="applyResistance" class="btn-primary" disabled>Apply Resistance</button>
         </div>
@@ -112,8 +152,6 @@
 const FTMS_SERVICE = 0x1826;
 const INDOOR_BIKE_DATA = 0x2AD2;
 const CONTROL_POINT = 0x2AD9;
-const MACHINE_STATUS = 0x2ADA;
-const SUPPORTED_RESISTANCE_RANGE = 0x2AD6;
 
 // Zwift Click UUIDs - Legacy (pre-2025)
 const ZWIFT_SERVICE_LEGACY = '00000001-19ca-4651-86e5-fa29dcdd09d1';
@@ -154,6 +192,14 @@ const elements = {
     cadence: document.getElementById('cadence'),
     speed: document.getElementById('speed'),
     resistance: document.getElementById('resistance'),
+    avgPower: document.getElementById('avgPower'),
+    avgSpeed: document.getElementById('avgSpeed'),
+    avgCadence: document.getElementById('avgCadence'),
+    heartRate: document.getElementById('heartRate'),
+    totalDistance: document.getElementById('totalDistance'),
+    totalEnergy: document.getElementById('totalEnergy'),
+    elapsedTime: document.getElementById('elapsedTime'),
+    remainingTime: document.getElementById('remainingTime'),
     currentGear: document.getElementById('currentGear'),
     gearUp: document.getElementById('gearUp'),
     gearDown: document.getElementById('gearDown'),
@@ -175,7 +221,14 @@ function log(message, type = 'info') {
     console.log(message);
 }
 
-// Parse Indoor Bike Data characteristic
+// Format seconds as mm:ss
+function formatTime(seconds) {
+    const min = Math.floor(seconds / 60);
+    const sec = seconds % 60;
+    return `${min}:${sec.toString().padStart(2, '0')}`;
+}
+
+// Parse Indoor Bike Data characteristic (FTMS bits 0-12)
 function parseIndoorBikeData(dataView) {
     const flags = dataView.getUint16(0, true);
     let offset = 2;
@@ -230,6 +283,40 @@ function parseIndoorBikeData(dataView) {
         offset += 2;
     }
 
+    // Bit 8: Expended Energy
+    if (flags & 0x100) {
+        data.totalEnergy = dataView.getUint16(offset, true); // kcal
+        offset += 2;
+        data.energyPerHour = dataView.getUint16(offset, true); // kcal/h
+        offset += 2;
+        data.energyPerMinute = dataView.getUint8(offset); // kcal/min
+        offset += 1;
+    }
+
+    // Bit 9: Heart Rate
+    if (flags & 0x200) {
+        data.heartRate = dataView.getUint8(offset); // bpm
+        offset += 1;
+    }
+
+    // Bit 10: Metabolic Equivalent
+    if (flags & 0x400) {
+        data.metabolicEquiv = dataView.getUint8(offset) / 10;
+        offset += 1;
+    }
+
+    // Bit 11: Elapsed Time
+    if (flags & 0x800) {
+        data.elapsedTime = dataView.getUint16(offset, true); // seconds
+        offset += 2;
+    }
+
+    // Bit 12: Remaining Time
+    if (flags & 0x1000) {
+        data.remainingTime = dataView.getUint16(offset, true); // seconds
+        offset += 2;
+    }
+
     return data;
 }
 
@@ -239,6 +326,14 @@ function updateMetrics(data) {
     if (data.cadence !== undefined) elements.cadence.textContent = Math.round(data.cadence);
     if (data.speed !== undefined) elements.speed.textContent = data.speed.toFixed(1);
     if (data.resistance !== undefined) elements.resistance.textContent = data.resistance;
+    if (data.avgPower !== undefined) elements.avgPower.textContent = data.avgPower;
+    if (data.avgSpeed !== undefined) elements.avgSpeed.textContent = data.avgSpeed.toFixed(1);
+    if (data.avgCadence !== undefined) elements.avgCadence.textContent = Math.round(data.avgCadence);
+    if (data.heartRate !== undefined) elements.heartRate.textContent = data.heartRate;
+    if (data.totalDistance !== undefined) elements.totalDistance.textContent = data.totalDistance;
+    if (data.totalEnergy !== undefined) elements.totalEnergy.textContent = data.totalEnergy;
+    if (data.elapsedTime !== undefined) elements.elapsedTime.textContent = formatTime(data.elapsedTime);
+    if (data.remainingTime !== undefined) elements.remainingTime.textContent = formatTime(data.remainingTime);
 }
 
 // Connect to FTMS Trainer
@@ -247,8 +342,7 @@ async function connectTrainer() {
         log('Requesting Bluetooth device...');
 
         trainerDevice = await navigator.bluetooth.requestDevice({
-            filters: [{ services: [FTMS_SERVICE] }],
-            optionalServices: [FTMS_SERVICE]
+            filters: [{ services: [FTMS_SERVICE] }]
         });
 
         log(`Found device: ${trainerDevice.name}`, 'success');
@@ -306,41 +400,50 @@ async function connectTrainer() {
 // Request control of the trainer
 async function requestControl() {
     if (!controlPointChar) return;
-    const cmd = new Uint8Array([OP_REQUEST_CONTROL]);
-    await controlPointChar.writeValue(cmd);
-    log('Control requested');
+    try {
+        const cmd = new Uint8Array([OP_REQUEST_CONTROL]);
+        await controlPointChar.writeValueWithResponse(cmd);
+        log('Control requested');
+    } catch (e) {
+        log(`Request control failed: ${e.message}`, 'error');
+    }
 }
 
-// Set resistance level (0-100)
+// Set resistance level (0-25, FTMS UINT8 with 0.1 resolution)
 async function setResistance(level) {
     if (!controlPointChar) return;
-    // Resistance is in 0.1 units, so multiply by 10
-    const resistanceValue = Math.round(level * 10);
-    const cmd = new Uint8Array([OP_SET_TARGET_RESISTANCE, resistanceValue & 0xFF]);
-    await controlPointChar.writeValue(cmd);
-    log(`Resistance set to ${level}%`);
+    try {
+        const resistanceValue = Math.round(level * 10);
+        const cmd = new Uint8Array([OP_SET_TARGET_RESISTANCE, resistanceValue]);
+        await controlPointChar.writeValueWithResponse(cmd);
+        log(`Resistance set to ${level}`);
+    } catch (e) {
+        log(`Set resistance failed: ${e.message}`, 'error');
+    }
 }
 
 // Set simulation parameters (grade in %)
 async function setSimulation(grade) {
     if (!controlPointChar) return;
+    try {
+        const windSpeed = 0; // m/s * 1000
+        const gradeValue = Math.round(grade * 100); // % * 100 (signed int16)
+        const crr = 40; // Rolling resistance coefficient 0.004 * 10000
+        const cw = 51;  // Wind resistance coefficient 0.51 * 100 (kg/m)
 
-    // Parameters: wind speed (m/s), grade (%), Crr, Cw
-    const windSpeed = 0; // m/s * 1000
-    const gradeValue = Math.round(grade * 100); // % * 100 (signed int16)
-    const crr = 0; // Rolling resistance * 10000
-    const cw = 0; // Wind resistance * 100
+        const cmd = new ArrayBuffer(7);
+        const view = new DataView(cmd);
+        view.setUint8(0, OP_SET_SIMULATION);
+        view.setInt16(1, windSpeed, true);
+        view.setInt16(3, gradeValue, true);
+        view.setUint8(5, crr);
+        view.setUint8(6, cw);
 
-    const cmd = new ArrayBuffer(7);
-    const view = new DataView(cmd);
-    view.setUint8(0, OP_SET_SIMULATION);
-    view.setInt16(1, windSpeed, true);
-    view.setInt16(3, gradeValue, true);
-    view.setUint8(5, crr);
-    view.setUint8(6, cw);
-
-    await controlPointChar.writeValue(new Uint8Array(cmd));
-    log(`Simulation set: grade ${grade}%`);
+        await controlPointChar.writeValueWithResponse(new Uint8Array(cmd));
+        log(`Simulation set: grade ${grade}%`);
+    } catch (e) {
+        log(`Set simulation failed: ${e.message}`, 'error');
+    }
 }
 
 // Handle trainer disconnection
@@ -352,7 +455,19 @@ function onTrainerDisconnected() {
     elements.applyResistance.disabled = true;
     elements.applyGrade.disabled = true;
     trainerDevice = null;
+    trainerServer = null;
     controlPointChar = null;
+    indoorBikeDataChar = null;
+}
+
+// Handle Click disconnection
+function onClickDisconnected() {
+    log('Click disconnected', 'error');
+    elements.clickStatus.textContent = 'Zwift Click: Disconnected';
+    elements.clickStatus.className = 'status disconnected';
+    elements.connectClick.disabled = false;
+    clickDevice = null;
+    lastButtonState = 0xFFFFFFFF;
 }
 
 // Connect to Zwift Click
@@ -360,19 +475,18 @@ async function connectClick() {
     try {
         log('Requesting Zwift Click device...');
 
-        // Use acceptAllDevices and filter by name, request both service UUIDs as optional
         clickDevice = await navigator.bluetooth.requestDevice({
-            acceptAllDevices: true,
+            filters: [
+                { namePrefix: 'Zwift Click' },
+                { namePrefix: 'ZC' },
+                { services: [ZWIFT_SERVICE_NEW] }
+            ],
             optionalServices: [ZWIFT_SERVICE_LEGACY, ZWIFT_SERVICE_NEW]
         });
 
         log(`Found Click: ${clickDevice.name}`, 'success');
 
-        clickDevice.addEventListener('gattserverdisconnected', () => {
-            log('Click disconnected', 'error');
-            elements.clickStatus.textContent = 'Zwift Click: Disconnected';
-            elements.clickStatus.className = 'status disconnected';
-        });
+        clickDevice.addEventListener('gattserverdisconnected', onClickDisconnected);
 
         const server = await clickDevice.gatt.connect();
 
@@ -424,7 +538,6 @@ async function connectClick() {
 
             // Get the key characteristics
             let syncRxChar = null;
-            let syncTxChar = null;
 
             for (const char of characteristics) {
                 const uuid = char.uuid;
@@ -447,9 +560,6 @@ async function connectClick() {
                 // Identify write characteristic for handshake (0x0003)
                 if (uuid.includes('00000003')) {
                     syncRxChar = char;
-                }
-                if (uuid.includes('00000004')) {
-                    syncTxChar = char;
                 }
             }
 
@@ -490,12 +600,14 @@ async function connectClick() {
 
             // Send handshake
             const handshake = new TextEncoder().encode('RideOn');
-            await syncRxChar.writeValue(handshake);
+            await syncRxChar.writeValueWithResponse(handshake);
             log('Handshake sent');
         }
 
         elements.clickStatus.textContent = `Zwift Click: ${clickDevice.name}`;
         elements.clickStatus.className = 'status connected';
+        elements.connectClick.disabled = true;
+        elements.disconnect.disabled = false;
 
     } catch (error) {
         log(`Click connection failed: ${error.message}`, 'error');
@@ -581,9 +693,9 @@ function changeGear(delta) {
         currentGear = newGear;
         elements.currentGear.textContent = currentGear;
 
-        // Calculate resistance based on gear (simple linear mapping)
-        const resistance = (currentGear / MAX_GEAR) * 100;
-        log(`Gear ${currentGear} (resistance ~${resistance.toFixed(0)}%)`);
+        // Calculate resistance based on gear (linear mapping to FTMS range 0-25)
+        const resistance = (currentGear / MAX_GEAR) * 25;
+        log(`Gear ${currentGear} (resistance ~${resistance.toFixed(1)})`);
 
         // Optionally apply to trainer
         if (controlPointChar) {
@@ -616,7 +728,7 @@ elements.resistanceSlider.addEventListener('input', (e) => {
 });
 
 elements.applyResistance.addEventListener('click', () => {
-    setResistance(parseInt(elements.resistanceSlider.value));
+    setResistance(parseFloat(elements.resistanceSlider.value));
 });
 
 elements.gradeSlider.addEventListener('input', (e) => {
@@ -627,8 +739,9 @@ elements.applyGrade.addEventListener('click', () => {
     setSimulation(parseFloat(elements.gradeSlider.value));
 });
 
-// Keyboard shortcuts
+// Keyboard shortcuts (skip when focused on form controls)
 document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
     if (e.key === 'ArrowUp' || e.key === '+') changeGear(1);
     if (e.key === 'ArrowDown' || e.key === '-') changeGear(-1);
 });
